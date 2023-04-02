@@ -509,7 +509,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
       return;
     }
 
-    const embeddings = JSON.stringify(this.embeddings);
+    const embeddings = this.get_json_string(this.embeddings);
     // check if embeddings file exists
     const embeddings_file_exists = await this.app.vault.adapter.exists(".smart-connections/embeddings-2.json");
     // if embeddings file exists then check if new embeddings file size is significantly smaller than existing embeddings file size
@@ -768,7 +768,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
       embeddings_2_json[new_key] = JSON.parse(JSON.stringify(embeddings_2_json[new_key]));
     }
     // write embeddings-2.json
-    await this.app.vault.adapter.write(".smart-connections/embeddings-2.json", JSON.stringify(embeddings_2_json));
+    await this.app.vault.adapter.write(".smart-connections/embeddings-2.json", this.get_json_string(embeddings_2_json));
   }
 
   // add .smart-connections to .gitignore to prevent issues with large, frequently updated embeddings file(s)
@@ -803,6 +803,27 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
     await this.get_all_embeddings();
     this.output_render_log();
     new Obsidian.Notice("Smart Connections: embeddings file Force Refreshed, new connections made.");
+  }
+
+  get_json_string(obj) {
+    if (typeof obj !== 'object') {
+      console.log("get_json_string: obj is not an object", typeof obj);
+      return JSON.stringify(obj);
+    }
+    console.log("get_json_string:", obj);
+    let sorted_keys = Object.keys(obj).sort();
+    let output_array = ["{\n"];
+    for (let i = 0; i < sorted_keys.length; i++) {
+      let line = "";
+      if (i === 0) {
+        line = `  "${sorted_keys[i]}": ${JSON.stringify(obj[sorted_keys[i]])}`;
+      } else {
+        line = `,\n  "${sorted_keys[i]}": ${JSON.stringify(obj[sorted_keys[i]])}`;
+      }
+        output_array.push(line);
+    }
+    output_array.push("\n}");
+    return output_array.join("");
   }
 
   // get embeddings for embed_input
