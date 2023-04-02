@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS = {
 };
 const MAX_EMBED_STRING_LENGTH = 25000;
 
+const EMBEDDINGS_CSV = ".smart-connections/md_embeddings.csv";
+
 let VERSION;
 
 //create one object with all the translations
@@ -55,11 +57,96 @@ const SMART_TRANSLATION = {
   },
 }
 
+
+class embeddingsMgr {
+  constructor(parent) {
+    this.parent = parent;
+    this.file_data = new Map();
+    this.is_inited = false;
+  }
+
+  init (text_data) {
+    if (this.is_inited) {
+      return;
+    }
+    this.file_data = this.parseCSV(text_data);
+    console.log("embeddingsMgr init", this);
+    this.is_inited = true;
+  }
+
+  get_key(full_path, unique_title) {
+    const arr = [full_path, unique_title];
+    return JSON.stringify(arr);
+  }
+
+  get_full_path_by_key(key) {
+    const arr = JSON.parse(key);
+    return arr[0];
+  }
+
+  get_unique_title_by_key(key) {
+    const arr = JSON.parse(key);
+    return arr[1];
+  }
+
+  parseCSV (file) {
+    let data = new Map();
+    const lines = file.split("\n");
+    const regex = /(\[.*\])/;
+    for (let i = 1; i < lines.length; i++) {
+      let line = lines[i];
+      if (line.length < 5) {
+        continue;
+      }
+      let match = line.match(regex);
+      let [full_path, unique_title, block_hash] = line.replace(regex, '').split(',').map(field => field.trim());
+      // console.log("match", full_path, unique_title, block_hash);
+      let embedding = match[0];
+      if (!full_path || !unique_title || !block_hash || !embedding) {
+        continue;
+      }
+      try {
+        let embedding_arr = JSON.parse(embedding);
+        let key = this.get_key(full_path, unique_title);
+        data.set(key, [block_hash, embedding_arr]);
+      } catch (e) {
+        console.log("error parsing embedding", e);
+        console.log("line", embedding);
+        break;
+      }
+    }
+    // print the data length
+    console.log("parseCSV", Object.keys(data).length);
+    return data;
+  }
+
+  get_row (full_path, unique_title) {
+    const key = this.get_key(full_path, unique_title);
+    return this.file_data.get(key);
+  }
+
+  get_block_hash (full_path, unique_title) {
+    let row = this.get_row(full_path, unique_title);
+    return row ? row[0] : null;
+  }
+
+  get_embeddings (full_path) {
+    let row = this.get_row(full_path);
+    return row ? row[1] : [];
+  }
+  md5(text) {
+    const hash = crypto.createHash("md5");
+    hash.update(text, "utf-8");
+    return hash.digest("hex");
+  }
+}
+
 class SmartConnectionsPlugin extends Obsidian.Plugin {
   // constructor
   constructor() {
     super(...arguments);
     this.api = null;
+    this.md_embeddings = new embeddingsMgr(this);
     this.embeddings = null;
     this.embeddings_external = null;
     this.file_exclusions = [];
@@ -92,7 +179,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
     // VERSION = '1.0.0';
     // console.log(VERSION);
     await this.loadSettings();
-    await this.check_for_update();
+    // await this.check_for_update();
 
     this.addIcon();
     this.addCommand({
@@ -217,30 +304,30 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
   }
 
   // check for update
-  async check_for_update() {
-    // fail silently, ex. if no internet connection
-    try {
-      // get latest release version from github
-      const response = await (0, Obsidian.requestUrl)({
-        url: "https://api.github.com/repos/brianpetro/obsidian-smart-connections/releases/latest",
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        contentType: "application/json",
-      });
-      // get version number from response
-      const latest_release = JSON.parse(response.text).tag_name;
-      // console.log(`Latest release: ${latest_release}`);
-      // if latest_release is newer than current version, show message
-      if(latest_release !== VERSION) {
-        new Obsidian.Notice(`[Smart Connections] A new version is available! (v${latest_release})`);
-        this.update_available = true;
-      }
-    } catch (error) {
-      console.log(error);
-    }
-  }
+  // async check_for_update() {
+  //   // fail silently, ex. if no internet connection
+  //   try {
+  //     // get latest release version from github
+  //     const response = await (0, Obsidian.requestUrl)({
+  //       url: "https://api.github.com/repos/brianpetro/obsidian-smart-connections/releases/latest",
+  //       method: "GET",
+  //       headers: {
+  //         "Content-Type": "application/json",
+  //       },
+  //       contentType: "application/json",
+  //     });
+  //     // get version number from response
+  //     const latest_release = JSON.parse(response.text).tag_name;
+  //     // console.log(`Latest release: ${latest_release}`);
+  //     // if latest_release is newer than current version, show message
+  //     if(latest_release !== VERSION) {
+  //       new Obsidian.Notice(`[Smart Connections] A new version is available! (v${latest_release})`);
+  //       this.update_available = true;
+  //     }
+  //   } catch (error) {
+  //     console.log(error);
+  //   }
+  // }
 
   async render_code_block(contents, container, ctx) {
     let nearest;
@@ -1056,6 +1143,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
         "Authorization": `Bearer ${this.settings.api_key}`
       }
     };
+    console.log("requesting embedding from input...", reqParams)
     let resp;
     try {
       resp = await (0, Obsidian.request)(reqParams)
@@ -2238,6 +2326,7 @@ class SmartConnectionsView extends Obsidian.ItemView {
       this.set_message("An OpenAI API key is required to make Smart Connections");
       return;
     }
+    // if(!this.plugin.md_embeddings.is_inited){
     if(!this.plugin.embeddings){
       await this.load_embeddings_file();
     }
@@ -2379,6 +2468,16 @@ class SmartConnectionsView extends Obsidian.ItemView {
     }
 
   }
+
+  // async load_embeddings_file(retries=0) {
+  //   this.plugin.embeddings = {}; // FIXME: data
+  //   if (this.plugin.md_embeddings.is_inited) {
+  //     console.log("embeddings already inited");
+  //     return;
+  //   }
+  //   const embeddings_file = await this.app.vault.adapter.read(EMBEDDINGS_CSV);
+  //   await this.plugin.md_embeddings.init(embeddings_file);
+  // }
 
 }
 
@@ -3281,7 +3380,7 @@ class SmartConnectionsChatView extends Obsidian.ItemView {
   async get_context_for_prompt(nearest) {
     let context = [];
     const MAX_SOURCES = 20; // 10 * 1000 (max chars) = 10,000 chars (must be under ~16,000 chars or 4K tokens) 
-    const MAX_CHARS = 10000;
+    const MAX_CHARS = 8000;
     let char_accum = 0;
     for (let i = 0; i < nearest.length; i++) {
       if (context.length >= MAX_SOURCES)
