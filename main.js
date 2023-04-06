@@ -136,6 +136,7 @@ class embeddingsMgr {
     return row ? row[1] : [];
   }
   md5(text) {
+    text = text.replace(/\r\n/g, "\n");
     const hash = crypto.createHash("md5");
     hash.update(text, "utf-8");
     return hash.digest("hex");
@@ -1193,6 +1194,8 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
      */
     // trim excess whitespace
     embed_input = embed_input.trim();
+    // change crlf to lf
+    embed_input = embed_input.replace(/\r\n/g, "\n");
     return crypto.createHash('md5').update(embed_input).digest("hex");
   }
 
