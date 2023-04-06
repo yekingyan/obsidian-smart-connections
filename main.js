@@ -26,6 +26,7 @@ const MAX_EMBED_STRING_LENGTH = 25000;
 const EMBEDDINGS_CSV = ".smart-connections/md_embeddings.csv";
 
 let VERSION;
+const SUPPORTED_FILE_TYPES = ["md", "canvas"];
 
 //create one object with all the translations
 // research : SMART_TRANSLATION[language][key]
@@ -217,6 +218,15 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
         this.open_chat();
       }
     });
+    // open random note from nearest cache
+    this.addCommand({
+      id: "smart-connections-random",
+      name: "Open: Random Note from Smart Connections",
+      callback: () => {
+        this.open_random_note();
+      }
+    });
+    // add settings tab
     this.addSettingTab(new SmartConnectionsSettingsTab(this.app, this));
     // register main view type
     this.registerView(SMART_CONNECTIONS_VIEW_TYPE, (leaf) => (new SmartConnectionsView(leaf, this)));
@@ -364,6 +374,22 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
     <circle cx="30" cy="50" r="9" fill="currentColor"/>`);
   }
 
+  // open random note
+  async open_random_note() {
+    const curr_file = this.app.workspace.getActiveFile();
+    const curr_key = this.get_file_key(curr_file);
+    // if no nearest cache, create Obsidian notice
+    if(typeof this.nearest_cache[curr_key] === "undefined") {
+      new Obsidian.Notice("[Smart Connections] No Smart Connections found. Open a note to get Smart Connections.");
+      return;
+    }
+    // get random from nearest cache
+    const rand = Math.floor(Math.random() * this.nearest_cache[curr_key].length/2); // divide by 2 to limit to top half of results
+    const random_file = this.nearest_cache[curr_key][rand];
+    // open random file
+    this.open_note(random_file);
+  }
+
   async open_view() {
     this.app.workspace.detachLeavesOfType(SMART_CONNECTIONS_VIEW_TYPE);
     await this.app.workspace.getRightLeaf(false).setViewState({
@@ -396,8 +422,9 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
   
   // get embeddings for all files
   async get_all_embeddings() {
-    // get all files in vault
-    const files = await this.app.vault.getMarkdownFiles();
+    // get all files in vault and filter all but markdown and canvas files
+    const files = (await this.app.vault.getFiles()).filter((file) => file instanceof Obsidian.TFile && (file.extension === "md" || file.extension === "canvas"));
+    // const files = await this.app.vault.getMarkdownFiles();
     // get open files to skip if file is currently open
     const open_files = this.app.workspace.getLeavesOfType("markdown").map((leaf) => leaf.view.file);
     this.render_log.total_files = files.length;
@@ -832,7 +859,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
     let req_batch = [];
     let blocks = [];
     // initiate curr_file_key from md5(curr_file.path)
-    const curr_file_key = crypto.createHash('md5').update(curr_file.path).digest('hex');
+    const curr_file_key = this.get_file_key(curr_file);
     // intiate file_file_embed_input by removing .md and converting file path to breadcrumbs (" > ")
     let file_embed_input = curr_file.path.replace(".md", "");
     file_embed_input = file_embed_input.replace(/\//g, " > ");
@@ -859,7 +886,35 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
       await this.get_embeddings_batch(req_batch);
       return;
     }
-
+    /**
+     * BEGIN Canvas file type Embedding
+     */
+    if(curr_file.extension === "canvas") {
+      // get file contents and parse as JSON
+      const canvas_contents = await this.app.vault.cachedRead(curr_file);
+      const canvas_json = JSON.parse(canvas_contents);
+      // for each object in nodes array
+      for(let j = 0; j < canvas_json.nodes.length; j++) {
+        // if object has text property
+        if(canvas_json.nodes[j].text) {
+          // add to file_embed_input
+          file_embed_input += "\n" + canvas_json.nodes[j].text;
+        }
+        // if object has file property
+        if(canvas_json.nodes[j].file) {
+          // add to file_embed_input
+          file_embed_input += "\nLink: " + canvas_json.nodes[j].file;
+        }
+      }
+      // console.log(file_embed_input);
+      req_batch.push([curr_file_key, file_embed_input, {
+        mtime: curr_file.stat.mtime,
+        path: curr_file.path,
+      }]);
+      await this.get_embeddings_batch(req_batch);
+      return;
+    }
+    
     /**
      * BEGIN Block "section" embedding
      */
@@ -1040,6 +1095,10 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
     }
 
   }
+  get_file_key(curr_file) {
+    return crypto.createHash('md5').update(curr_file.path).digest('hex');
+  }
+
   update_render_log(blocks, file_embed_input) {
     if (blocks.length > 0) {
       // multiply by 2 because implies we saved token spending on blocks(sections), too
@@ -1967,7 +2026,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
 
   add_link_listeners(item, curr, list) {
     item.addEventListener("click", async (event) => {
-      await this.handle_click(curr, event);
+      await this.open_note(curr, event);
     });
     // drag-on
     // currently only works with full-file links
@@ -1997,7 +2056,7 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
 
   // get target file from link path
   // if sub-section is linked, open file and scroll to sub-section
-  async handle_click(curr, event) {
+  async open_note(curr, event=null) {
     let targetFile;
     let heading;
     if (curr.link.indexOf("#") > -1) {
@@ -2033,10 +2092,16 @@ class SmartConnectionsPlugin extends Obsidian.Plugin {
     } else {
       targetFile = this.app.metadataCache.getFirstLinkpathDest(curr.link, "");
     }
-    // properly handle if the meta/ctrl key is pressed
-    const mod = Obsidian.Keymap.isModEvent(event);
-    // get most recent leaf
-    let leaf = this.app.workspace.getLeaf(mod);
+    let leaf;
+    if(event) {
+      // properly handle if the meta/ctrl key is pressed
+      const mod = Obsidian.Keymap.isModEvent(event);
+      // get most recent leaf
+      leaf = this.app.workspace.getLeaf(mod);
+    }else{
+      // get most recent leaf
+      leaf = this.app.workspace.getMostRecentLeaf();
+    }
     await leaf.openFile(targetFile);
     if (heading) {
       let { editor } = leaf.view;
@@ -2283,17 +2348,11 @@ class SmartConnectionsView extends Obsidian.ItemView {
         // console.log("no file open, returning");
         return;
       }
-      // return if file type is not markdown
-      if(file.extension !== "md") {
-        // if file is 'canvas' and length of current view content is greater than 300 then return
-        if((file.extension === "canvas") && (container.innerHTML.length > 1000)) {
-          // prevents clearing view of search results when still on the same canvas
-          // console.log("prevented clearing view of search results when still on the same canvas")
-          return;
-        }
+      // return if file type is not supported
+      if(SUPPORTED_FILE_TYPES.indexOf(file.extension) === -1) {
         return this.set_message([
           "File: "+file.name
-          ,"Smart Connections only works with Markdown files."
+          ,"Unsupported file type (Supported: "+SUPPORTED_FILE_TYPES.join(", ")+")"
         ]);
       }
       // run render_connections after 1 second to allow for file to load
@@ -2866,7 +2925,7 @@ class SmartConnectionsChatView extends Obsidian.ItemView {
     await this.chat.load_chat(chat_id);
     this.render_chat();
     for (let i = 0; i < this.chat.chat_ml.length; i++) {
-      this.render_message(this.chat.chat_ml[i].content, this.chat.chat_ml[i].role);
+      await this.render_message(this.chat.chat_ml[i].content, this.chat.chat_ml[i].role);
     }
   }
   // clear current chat state
